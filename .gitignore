@@ -1,0 +1,13 @@
+output/
+*.xml
+*.bin
+*.json
+*.md
+!README.md
+__pycache__/
+*.pyc
+.DS_Store
+build/
+hw_passwd
+*.o
+.venv/
