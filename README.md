@@ -1,209 +1,165 @@
-# 📡 Huawei EchoLife HG8145V5 / HG8245 (Telmex) — Extractor Forense de Credenciales, Descifrador y Gestor SIP
+# 📡 Nokia G-1425G-H & Huawei ONT (Telmex) — Extractor de Parámetros, Empaquetador y Gestor VoIP SIP / Asterisk
 
-Herramienta autónoma en Python y C++ para interactuar con la API web y la arquitectura criptográfica de las terminales de red óptica (ONT GPON) **Huawei EchoLife** (modelos `HG8145V5`, `HG8145V5V3`, `HG8245W5`, `EG8145` y variantes compatibles) distribuidas ampliamente por **Telmex** en servicios de fibra óptica Infinitum.
+Conjunto modular de herramientas en Python (y C++ para variantes Huawei) diseñado para la interoperabilidad, diagnóstico técnico, extracción de telemetría de red, análisis de respaldos de configuración y preparación de telefonía fija **VoIP SIP (IMS Telmex)** hacia conmutadores **Asterisk PBX** (`res_pjsip` y `chan_sip`) en terminales ópticas GPON (**ONT**) distribuidas por **Telmex**:
 
-Permite la identificación automática de la pasarela, descarga del respaldo maestro `hw_ctree.xml`, descifrado del contenedor binario Type-1, descifrado inverso de hashes `$2` de Huawei a texto plano, y gestión quirúrgica de perfiles VoIP SIP.
+- **Nokia / Alcatel-Lucent:** Modelo **`G-1425G-H`** (Firmware serie `3TN00702IJMI00`, chipset MediaTek `MTK7552`, servidor web `thttpd`) y variantes compatibles de la familia `G-1425G` / `G-2425G`.
+- **Huawei EchoLife (legado en el repositorio):** Modelos `HG8145V5`, `HG8145V5V3`, `HG8245W5`, `EG8145`.
 
 ---
 
-## ⚡ ¿Qué hace este conjunto de herramientas?
-
-Las ONTs de Huawei implementan un esquema de seguridad de dos niveles para proteger sus configuraciones sensibles:
+## 🏗️ Arquitectura de la Suite Nokia (`G-1425G-H`)
 
 ```
-+-----------------------------------------------------------------------------------------+
-|                               CONTENEDOR TYPE-1 (AES-256-CBC)                           |
-| [Encabezado 8B] [IV 16B] [Payload Cifrado AES-256-CBC (N x 16B)] [HMAC-SHA256 (32B)]   |
-+-----------------------------------------------------------------------------------------+
-                                            │
-                                  KDF SHA-256 (8,192 rondas)
-                                            │
-                                            ▼
-                                [ Gzip Decompress ]
-                                            │
-                                            ▼
-                             hw_ctree.xml (Árbol de Texto XML)
-                                            │
-                      ┌─────────────────────┴─────────────────────┐
-                      ▼                                           ▼
-          Nodos WAN PPP / SIP / Wi-Fi                 Hashes Propietarios $2
-             (Atributos XML)                       (White-Box AES Obfuscation)
-                      │                                           │
-                      │                                           ▼
-                      │                               [ Binario C++ hw_passwd ]
-                      │                                           │
-                      └─────────────────────┬─────────────────────┘
-                                            ▼
-                           Credenciales en Texto Plano (Cleartext)
++---------------------------------------------------------------------------------------------------+
+|                                   ONT NOKIA G-1425G-H (thttpd)                                    |
+|  1. GET / -> Desafío dinámico: pubkey (RSA-1024), nonce (32B), csrf_token (16 chars)              |
+|  2. POST /login.cgi -> Sobre híbrido RSA-1024 (PKCS#1 v1.5) + AES-128-CBC (PKCS#7, sjcl)          |
+|  3. Respuesta HTTP 299 + Header X-SID + Cookies HttpOnly (sid, isAdminLoggedIn=1, lsid)           |
++---------------------------------------------------------------------------------------------------+
+                                                 │
+                    ┌────────────────────────────┴────────────────────────────┐
+                    ▼                                                         ▼
+   [ Telemetría Web CGI (Solo Lectura) ]                     [ Respaldo config.cfg (usb.cgi?export) ]
+   - device_status.cgi (Modelo, SN GPON, FW)                 - Header 20B LE (magic 0x00123123 + CRC32)
+   - wan_config_glb.cgi (Usuario PPPoE VLAN 881)             - Compresión zlib / contenedor de dispositivo
+   - wlan_config.cgi (10 SSIDs + PSK AES-128-CBC)            - Empaquetador y verificador CRC32
+   - voice_info.cgi (Estado SIP ONT)                         - Modificador XML TR-098 / TR-104
+   - nat_glb.cgi?v=alg (Diagnóstico SIP ALG)
+   - log.cgi?vlog_glb (Doble sobre RSA+AES -> Syslog)
+                    │                                                         │
+                    └────────────────────────────┬────────────────────────────┘
+                                                 ▼
+                         Reportes Unificados + Configuración Asterisk PBX
+                         - output/credentials.json & output/credentials.md
+                         - output/asterisk_pjsip_telmex.conf (res_pjsip)
+                         - output/asterisk_sip_legacy_telmex.conf (chan_sip)
+                         - output/asterisk_extensions_sample.conf
+                         - output/asterisk_network_checklist.md
 ```
 
-1. **Detección Automática de Pasarela Multiplataforma:** Identifica de forma nativa la IP local del router en **Windows**, **macOS** y **Linux** sin requerir intervención manual.
-2. **Descarga Atómica de Configuración:** Autentica en el módem vía HTTP (`GetRandCount.asp` + `login.cgi`) y obtiene el token de respaldo (`onttoken`) para descargar `hw_ctree.xml`.
-3. **Descifrado de Contenedor Type-1:** 
-   - Deriva la clave AES mediante **8,192 rondas sucesivas de SHA-256** combinando el Vector de Inicialización (IV) de 16 bytes con la clave maestra de Huawei (`hex:13395537D2730554A176799F6D56A239`).
-   - Descifra el bloque con **AES-256-CBC**.
-   - Ajusta el padding final según el nibble codificado en `IV[15] & 0x0F`.
-   - Descomprime el flujo **Gzip** (`1F 8B`) obteniendo el archivo XML en texto claro.
-4. **Descifrado de Hashes Internos `$2`:**
-   - Huawei almacena contraseñas de usuario, Wi-Fi y VoIP ofuscadas bajo el prefijo `$2...`.
-   - El script integra la herramienta compilada `hw_passwd` (C++11) basada en el análisis inverso de las tablas White-Box AES de Huawei, traduciendo cada hash a texto plano de manera determinista.
-5. **Empaquetado y Firma (Packer):** Permite volver a comprimir, cifrar en AES-256-CBC y calcular el HMAC-SHA256 de configuraciones modificadas para cargarlas nuevamente en el módem.
-6. **Gestión de Telefonía SIP:** Permite desactivar quirúrgicamente el cliente SIP interno de Huawei para liberar la línea telefónica y utilizarla en conmutadores Asterisk / FreePBX o Softphones.
+### Módulos Principales (Nokia)
+
+| Archivo | Fases / Microfunciones | Descripción |
+| :--- | :--- | :--- |
+| [`nokia_auth.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/nokia_auth.py) | `MF-2.1`, `MF-2.2`, `MF-2.3` | Cliente criptográfico bit-exacto para el login híbrido **RSA-1024 + AES-128-CBC** (`JSEncrypt` + `sjcl`), manejo de estado `HTTP 299` / `X-SID`, descifrador AES de sesión (`aes128_cbc_decrypt_sjcl`), mapeo de los 43 endpoints de `menu.cgi` y cierre garantizado (`GET /login.cgi?out`). |
+| [`nokia_backup.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/nokia_backup.py) | `MF-3.1`, `MF-3.2`, `MF-3.3` | Descarga limpia del respaldo `config.cfg` vía `POST /usb.cgi?export`, análisis estructural de la cabecera de 20 bytes (`magic 0x00123123`, `compressed_size`, `CRC32`, `uncompressed_size + 1`, `fw_magic`) y cadena de desempaquetado. |
+| [`nokia_g1425gh_extractor.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/nokia_g1425gh_extractor.py) | `MF-4.1a` .. `MF-4.3b` | Extractor principal: recolecta telemetría web en vivo, descifra todas las contraseñas Wi-Fi (`PreSharedKey`) en texto plano con la clave AES de sesión, descarga el syslog mediante doble envoltorio RSA+AES, parsea árboles XML TR-098/TR-104 y genera los reportes y plantillas para **Asterisk**. |
+| [`nokia_config_packer.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/nokia_config_packer.py) | `MF-5.1b`, `MF-5.2a` | Constructor de cabecera binaria de 20/40 bytes (`build_cfg_header_and_crc`), compresor `zlib` (`pack_nokia_configuration`) y verificador de integridad `CRC32` (`verify_nokia_pack`). |
+| [`nokia_sip_manager.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/nokia_sip_manager.py) | `MF-5.1a`, `MF-5.2b`, `MF-5.2c`, `MF-5.3a` | Diagnóstico en vivo del cliente SIP interno de la ONT (`--status`), diagnóstico de red y **SIP ALG** para Asterisk (`--check-network`), edición de estado `Enable` en nodos XML de voz (`--disable` / `--enable`) y restauración verificada (`--apply`). |
 
 ---
 
-## 🎯 ¿Qué se puede hacer con la información extraída?
+## 🗂️ Memoria del Proyecto y Bitácora Técnica (`Pizarra/`)
 
-La extracción y descifrado de estos parámetros permite desbloquear la infraestructura de red sin depender de las restricciones del ISP:
+Todo el proceso de ingeniería, hallazgos por fase, pruebas diferenciales y decisiones de arquitectura se encuentra documentado paso a paso en la carpeta [`Pizarra/`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/00_indice_y_arquitectura.md):
 
-### 1. Router Neutro en Modo Puente (Bridge)
-* **Objetivo:** Eliminar el Doble NAT y delegar el cortafuegos, NAT y QoS a un router perimetral profesional (**pfSense**, **OPNsense**, **OpenWrt**, **MikroTik RouterOS** o gateways Linux dedicados como **PuertaOS**).
-* **Parámetros obtenidos:**
-  * **Usuario PPPoE:** `00259ELHWTC66CXXXXX@prodigyweb.com.mx`
-  * **Contraseña PPPoE:** Clave en texto plano de 30 caracteres.
-  * **Etiqueta VLAN (802.1Q):** **VLAN ID 881** (MTU 1492, CoS 0).
-  * **Gateway BRAS:** Dirección IP de la pasarela del operador.
-
-### 2. Telefonía Fija en Conmutador IP o Softphone (VoIP SIP IMS)
-* **Objetivo:** Recibir y realizar llamadas de la línea fija desde conmutadores PBX locales (**Asterisk**, **FreePBX**, **3CX**) o softphones en smartphone/PC (**MicroSIP**, **Zoiper**, **Linphone**).
-* **Parámetros obtenidos:**
-  * **Directorio / Número:** Número a 10 dígitos (ej. `+5255XXXXXXXX`).
-  * **Usuario Digest Auth:** `+5255XXXXXXXX@vims-h.telmex.com`
-  * **Contraseña SIP Secreta:** Clave de autenticación para el Core IMS.
-  * **Servidor Registrar:** `vims-h.telmex.com:5060` (UDP).
-  * **Outbound Proxy:** `nir8.norte.telmex.net:5060` (UDP) o proxy regional asignado.
-  * **Códec de Voz:** `G.711 A-law` (PCMA, 20ms packetization).
-
-### 3. Sustitución de ONT por Módulo SFP GPON Stick
-* **Objetivo:** Conectar la fibra óptica directamente a una ranura SFP+ en un router o switch administrado.
-* **Parámetros obtenidos:**
-  * **GPON Serial Number (SN / Hex):** Identificador de registro GPON en la OLT.
-  * **OUI / Fabricante:** `HWTC` (Huawei Technologies).
-  * **SLID / Password GPON:** Clave de autenticación PLOAM (si aplica en la zona).
+1. [`00_indice_y_arquitectura.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/00_indice_y_arquitectura.md) — Índice general, estado de todas las fases y bitácora cronológica.
+2. [`01_plan_maestro_fases.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/01_plan_maestro_fases.md) — Estrategia general y resultados de las Fases 1 a 3.5.
+3. [`02_fase1_reconocimiento_nokia.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/02_fase1_reconocimiento_nokia.md) — Reconocimiento de red, `thttpd` y análisis del frontend criptográfico JS (`crypto_page.js`, `sjcl.js`).
+4. [`03_fase2_autenticacion_y_endpoints.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/03_fase2_autenticacion_y_endpoints.md) — Autenticación `HTTP 299` + `X-SID`, identificación del Nokia `G-1425G-H` y catálogo de los 43 CGIs.
+5. [`04_fase3_extraccion_y_criptografia.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/04_fase3_extraccion_y_criptografia.md) — Análisis de cabecera `0x00123123`, `CRC32` y pruebas diferenciales sobre `config.cfg`.
+6. [`05_plan_detallado_fases_4_y_5.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/05_plan_detallado_fases_4_y_5.md) — Especificación granular de las 12 microfunciones de las Fases 4 y 5 (`MF-4.1a` a `MF-5.3a`).
+7. [`06_fase4_extraccion_y_asterisk.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/06_fase4_extraccion_y_asterisk.md) — Documentación e integración de los recolectores de telemetría, descifrado Wi-Fi, syslog y plantillas Asterisk.
+8. [`07_fase5_empaquetador_y_sip_manager.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/07_fase5_empaquetador_y_sip_manager.md) — Documentación del empaquetador `.cfg`, gestor SIP y checklist de interoperabilidad Asterisk ↔ IMS Telmex.
 
 ---
 
-## 💻 Requisitos del Sistema
+## 💻 Requisitos e Instalación
 
-* **Python:** Versión 3.8 o superior.
-* **Librerías Python:**
+- **Python:** 3.8 o superior.
+- **Dependencias:**
   ```bash
-  pip install -r requirements.txt
+  python3 -m venv .venv
+  .venv/bin/pip install -r requirements.txt
   ```
-* **Compilador C++ (para compilar `hw_passwd` en el primer uso):**
-  * **Linux (Debian / Ubuntu / Pop!_OS):** `sudo apt install build-essential libssl-dev cmake`
-  * **macOS:** Xcode Command Line Tools (`xcode-select --install`) y OpenSSL (`brew install openssl`).
-  * **Windows:** MinGW-w64 o MSVC con CMake.
-
-> [!NOTE]
-> El script intentará compilar automáticamente `hw_passwd` al ejecutarse por primera vez si no encuentra el binario precompilado. También puedes compilarlo manualmente ejecutando:
-> ```bash
-> cd src && make
-> ```
 
 ---
 
-## 🚀 Guía de Uso
+## 🚀 Guía de Uso (Nokia `G-1425G-H`)
 
-### 1. Extracción Interactiva en Red Local
+### 1. Extracción Completa de Telemetría, Reportes y Plantillas Asterisk
 
-Conecta tu equipo a cualquier puerto LAN del módem Huawei (por cable Ethernet o Wi-Fi) y ejecuta:
+Conéctate a la red local del módem Nokia (ej. `192.168.99.254` o `192.168.1.254`) y ejecuta:
 
 ```bash
-python huawei_hg8145v5_extractor.py
+.venv/bin/python nokia_g1425gh_extractor.py --ip 192.168.99.254 -u TELMEX -p TuPasswordWeb
 ```
 
-*Salida interactiva en terminal:*
-```text
-====================================================================
-📡 HUAWEI ONT AUTOMATED CREDENTIAL EXTRACTOR & DECRYPTOR
-   EchoLife HG8145V5 / HG8145V5V3 / HG8245 / EG8145 Series (Telmex)
-====================================================================
-[+] Dirección IP de la ONT identificada: 192.168.1.254
-🔑 Ingrese el password web del router (192.168.1.254): ********
-📡 Conectando y autenticando en el módem (http://192.168.1.254)...
-✅ Autenticación exitosa en el módem.
-📥 Solicitando archivo de respaldo de configuración (hw_ctree.xml)...
-✅ Archivo cifrado recibido (46,824 bytes) -> output/hw_ctree_encrypted.xml
-🔓 Descifrando contenedor Type-1 AES-256-CBC con KDF SHA-256 (8,192 rondas)...
-✅ Configuración XML descifrada exitosamente (335,737 caracteres) -> output/hw_ctree_decrypted.xml
-🔍 Extrayendo parámetros de red, WAN PPPoE y cuentas VoIP SIP...
-✅ Reportes generados:
-  - output/credentials.json
-  - output/credentials.md
+- Si ya recolectaste previamente `output/web_telemetry.json` y deseas regenerar los reportes y configuraciones de Asterisk sin conectarte al módem (modo `--offline`), o inyectar un archivo XML (`--xml`) / parámetros SIP conocidos (`--sip-number`, `--sip-user`, `--sip-pass`):
+  ```bash
+  .venv/bin/python nokia_g1425gh_extractor.py --offline \
+    --sip-number +5255XXXXXXXX \
+    --sip-user +5255XXXXXXXX \
+    --sip-pass TuPasswordSIP
+  ```
 
-====================================================================
-📋 PARÁMETROS CRÍTICOS EXTRAÍDOS:
-====================================================================
-  🌐 Usuario WAN PPPoE:    00259ELHWTC66CXXXXX@prodigyweb.com.mx
-  🔑 Contraseña PPPoE:     38e35eef346e584626c9f9XXXXXXXX
-  🏷️  VLAN ID (802.1Q):     881
-  📞 Usuario SIP (Digest): +5255XXXXXXXX@vims-h.telmex.com
-  🔐 Contraseña SIP:       bdcc1652XXXX
-  🌐 Servidor Registrar:   vims-h.telmex.com
-====================================================================
-✨ Proceso completado exitosamente.
-```
+**Archivos generados en `output/`:**
+- `output/web_telemetry.json`: Telemetría completa (identidad GPON, WAN VLAN 881, estado SIP, 10 redes Wi-Fi con sus claves WPA en texto claro y resumen de las 7,432 líneas del syslog).
+- `output/credentials.json` y `output/credentials.md`: Reporte consolidado de credenciales y parámetros de red.
+- `output/asterisk_pjsip_telmex.conf`: Configuración lista para el stack moderno **PJSIP (`res_pjsip`)** de Asterisk.
+- `output/asterisk_sip_legacy_telmex.conf`: Configuración para el driver clásico **`chan_sip`**.
+- `output/asterisk_extensions_sample.conf`: Plan de marcado de ejemplo (`extensions.conf`) para llamadas entrantes y salientes a 10 dígitos.
 
 ---
 
-### 2. Modo Desatendido (Línea de Comandos)
+### 2. Verificación del Estado SIP en la ONT y Checklist de Red para Asterisk (`nokia_sip_manager.py`)
 
-Especificando la dirección IP y contraseña de acceso:
-
-```bash
-python huawei_hg8145v5_extractor.py --ip 192.168.1.254 -u TELMEX -p TuPasswordDeEtiqueta
-```
-
----
-
-### 3. Salida Estructurada en JSON
-
-Para automatización en scripts bash o integración en pipelines:
-
-```bash
-python huawei_hg8145v5_extractor.py -p TuPasswordDeEtiqueta --json
-```
-
----
-
-### 4. Modo Offline (Descifrado de Respaldo Local)
-
-Si ya descargaste manualmente el archivo `hw_ctree.xml` desde la interfaz web del módem o mediante un respaldo previo:
-
-```bash
-python huawei_hg8145v5_extractor.py --file ruta/al/hw_ctree.xml
-```
-
----
-
-### 5. Desactivación de Telefonía SIP (`huawei_sip_manager.py`)
-
-Para evitar conflictos de registro SIP cuando configuras un cliente VoIP externo (Asterisk o Softphone), puedes apagar la cuenta telefónica dentro del módem Huawei:
-
-1. **Generar archivo cifrado con SIP desactivado:**
+1. **Consultar si el cliente SIP interno del Nokia está activo o inactivo (`MF-5.1a`):**
    ```bash
-   python huawei_sip_manager.py --disable
+   .venv/bin/python nokia_sip_manager.py --status --ip 192.168.99.254 -p TuPasswordWeb
    ```
-2. **Aplicar directamente al módem y reiniciar:**
+2. **Ejecutar el diagnóstico de red, DNS IMS y SIP ALG para Asterisk (`MF-5.3a`):**
    ```bash
-   python huawei_sip_manager.py --disable --apply --ip 192.168.1.254 -p TuPasswordDeEtiqueta
+   .venv/bin/python nokia_sip_manager.py --check-network --ip 192.168.99.254 -p TuPasswordWeb
    ```
-3. **Reactivar la telefonía en el módem si deseas revertir los cambios:**
+   Genera `output/asterisk_network_checklist.md` verificando:
+   - Que el cliente SIP interno del Nokia esté `Disabled`.
+   - Que la WAN `VLAN 881` esté conectada, incluya el servicio `VOIP` y exponga los DNS de Telmex (`189.233.12.5`, `189.233.15.2`).
+   - Si el **SIP ALG** (`nat_glb.cgi?v=alg` → `SIPEnable`) está activo en el router (recomendando desactivarlo en *Security → DMZ and ALG* para evitar que el NAT altere los paquetes SIP/SDP de Asterisk).
+
+3. **Modificar el estado SIP en un XML de configuración y empaquetar `.cfg` (`MF-5.2b` + `MF-5.2a`):**
    ```bash
-   python huawei_sip_manager.py --enable --apply --ip 192.168.1.254 -p TuPasswordDeEtiqueta
+   # Modo 100% offline (genera el contenedor .cfg verificado sin subirlo al router)
+   .venv/bin/python nokia_sip_manager.py --disable --xml ruta/config.xml -o output/config_sip_disabled.cfg
+
+   # Subida controlada al router (verifica magic y CRC32 antes de enviar a /usb.cgi?import)
+   .venv/bin/python nokia_sip_manager.py --disable --xml ruta/config.xml -o output/config_sip_disabled.cfg --apply --ip 192.168.99.254 -p TuPasswordWeb
    ```
 
 ---
 
-## 🔒 Descargo de Responsabilidad (Disclaimer)
+### 3. Descarga y Verificación Forense de Respaldos `config.cfg` (`nokia_backup.py` y `nokia_config_packer.py`)
 
-Esta herramienta ha sido desarrollada exclusivamente con fines de **auditoría de red personal, diagnóstico técnico, optimización de infraestructura propia e interoperabilidad de equipos**. 
+```bash
+# Descargar config.cfg en crudo desde el módem Nokia (MF-3.1)
+.venv/bin/python nokia_backup.py download --ip 192.168.99.254 -p TuPasswordWeb
 
-El autor no se responsabiliza por el uso indebido de esta herramienta ni por modificaciones inapropiadas en el firmware o configuración de equipos proporcionados por operadores de telecomunicaciones.
+# Analizar cabecera de 20 bytes (magic 0x00123123), entropía y verificar CRC32 (MF-3.2)
+.venv/bin/python nokia_backup.py analyze --file output/nokia_backup_raw.cfg
+
+# Verificar integridad de cualquier contenedor .cfg con nokia_config_packer.py
+.venv/bin/python nokia_config_packer.py --verify output/nokia_backup_raw.cfg
+```
+
+---
+
+## 🧪 Ejecución de la Suite de Pruebas Automatizadas
+
+El proyecto incluye pruebas unitarias y de validación criptográfica en la carpeta `tests/` (todas se ejecutan 100% en memoria sin alterar el router):
+
+```bash
+# 1. Validación bit a bit de primitivas criptográficas (AES-128-CBC sjcl, RSA-1024 PKCS#1 v1.5, base64url)
+.venv/bin/python -I tests/validate_crypto.py
+
+# 2. Pruebas unitarias de parsers XML TR-098/TR-104, reportes y plantillas Asterisk (11 pruebas)
+.venv/bin/python -I tests/test_xml_parsers.py
+
+# 3. Pruebas del empaquetador Nokia .cfg y gestor SIP (25 pruebas)
+.venv/bin/python -I -m unittest discover -s tests
+```
 
 ---
 
 ## 📄 Licencia
 
-Este proyecto está bajo la Licencia **MIT**. Consulta el archivo [LICENSE](file:///Users/edward/Documents/herramientasdered/tools/router_extractors/huawei-hg8145v5-telmex-extractor/LICENSE) para más detalles.
+Este proyecto está bajo la Licencia **MIT**. Consulta el archivo [LICENSE](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/LICENSE) para más detalles.
