@@ -21,6 +21,7 @@ import re
 import gzip
 import json
 import html
+import struct
 import base64
 import getpass
 import hashlib
@@ -39,6 +40,62 @@ except ImportError:
 
 # Clave maestra de derivación oficial para contenedores Type-1 de Huawei
 HUAWEI_MASTER_KEY = b"hex:13395537D2730554A176799F6D56A239"
+
+# Claves AES-256 pre-derivadas de las tablas White-Box AES de Huawei (src/rev_hw.cpp)
+# Permiten descifrar hashes $1...$ y $2...$ en Python puro sin requerir compilador C++/OpenSSL
+HUAWEI_DOLLAR2_AES256_KEY = bytes.fromhex(
+    "6fc6e3436a53b6310dc09a475494ac774e7afb21b9e58fc8e58b5660e48e2498"
+)
+HUAWEI_DOLLAR1_AES256_BASE = bytearray.fromhex(
+    "b8363c9b77daed4b9abb9f2f6df5f1d5cb64975d5d3bcee8827f2f42235f9229"
+)
+HUAWEI_DOLLAR1_SALT_POS = (0x0B, 0x11, 0x17, 0x1D)
+
+
+def decrypt_huawei_password_native(enc_val: str) -> str:
+    """Descifra hashes reversibles $1...$ y $2...$ de Huawei en Python puro (sin C++)."""
+    if not enc_val or len(enc_val) < 23 or enc_val[0] != "$" or enc_val[-1] != "$":
+        return enc_val
+    fmt = enc_val[1]
+    if fmt not in ("1", "2"):
+        return enc_val
+
+    inner = [(0x1E if ord(c) == ord("~") else (ord(c) - 0x21) & 0xFF) for c in enc_val[2:-1]]
+
+    def plain20_to_bin16(chunk20):
+        words = []
+        for i in range(4):
+            val = 0
+            mul = 1
+            for j in range(5):
+                val += mul * chunk20[i * 5 + j]
+                mul *= 93
+            words.append(val & 0xFFFFFFFF)
+        return struct.pack("<4I", *words)
+
+    if fmt == "2":
+        if len(inner) < 40 or len(inner) % 20 != 0:
+            return enc_val
+        blocks = [plain20_to_bin16(inner[i : i + 20]) for i in range(0, len(inner), 20)]
+        iv = blocks[-1]
+        ct = b"".join(blocks[:-1])
+        dec = Cipher(algorithms.AES(HUAWEI_DOLLAR2_AES256_KEY), modes.CBC(iv)).decryptor()
+        pt = dec.update(ct) + dec.finalize()
+        return pt.split(b"\x00", 1)[0].decode("utf-8", errors="ignore")
+
+    # Formato $1...$
+    if len(inner) < 24 or len(inner) % 24 != 0:
+        return enc_val
+    key = bytearray(HUAWEI_DOLLAR1_AES256_BASE)
+    for idx, pos in enumerate(HUAWEI_DOLLAR1_SALT_POS):
+        key[pos] = inner[20 + idx]
+    dec = Cipher(algorithms.AES(bytes(key)), modes.ECB()).decryptor()
+    out = bytearray()
+    for i in range(0, len(inner), 24):
+        blk = plain20_to_bin16(inner[i : i + 20])
+        out.extend(dec.update(blk))
+    out.extend(dec.finalize())
+    return bytes(out).split(b"\x00", 1)[0].decode("utf-8", errors="ignore")
 
 
 def detect_default_gateway():
@@ -120,48 +177,8 @@ class HuaweiHG8145V5Extractor:
         self._ensure_hw_passwd()
 
     def _ensure_hw_passwd(self):
-        """Verifica o compila el binario hw_passwd para descifrado de hashes $2."""
-        if self.hw_passwd_bin.exists() and os.access(self.hw_passwd_bin, os.X_OK):
-            return
-
-        src_dir = self.script_dir / "src"
-        if (src_dir / "hw_passwd.cpp").exists():
-            print("⚙️ Compilando módulo nativo de descifrado $2 (hw_passwd)...")
-            # Probar Make primero si existe Makefile
-            if (src_dir / "Makefile").exists():
-                try:
-                    subprocess.run(["make", "-C", str(src_dir)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    if self.hw_passwd_bin.exists():
-                        self.hw_passwd_bin.chmod(0o755)
-                        print("✅ hw_passwd compilado exitosamente con Make.")
-                        return
-                except Exception:
-                    pass
-
-            # Fallback a compilación directa con g++ / clang++
-            compiler = "clang++" if sys.platform == "darwin" else "g++"
-            cmd = [
-                compiler, "-std=c++11", "-O2",
-                str(src_dir / "hw_passwd.cpp"),
-                str(src_dir / "rev_hw.cpp"),
-            ]
-            if sys.platform == "darwin":
-                # Detección de Homebrew OpenSSL
-                brew_prefixes = ["/opt/homebrew", "/usr/local"]
-                for bp in brew_prefixes:
-                    p = Path(bp)
-                    if (p / "opt/openssl/include").exists():
-                        cmd.extend([f"-I{bp}/opt/openssl/include", f"-L{bp}/opt/openssl/lib"])
-                        break
-            cmd.extend(["-lcrypto", "-o", str(self.hw_passwd_bin)])
-
-            try:
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.hw_passwd_bin.chmod(0o755)
-                print("✅ hw_passwd compilado exitosamente.")
-            except Exception as e:
-                print(f"⚠️ Aviso: No se pudo compilar hw_passwd automáticamente ({e}).")
-                print("   Puedes compilarlo manualmente ejecutando: cd src && make")
+        """Usa el descifrador nativo en Python para hashes $1/$2 (no requiere compilar C++)."""
+        return
 
     def login(self):
         """Inicia sesión en la interfaz web del router Huawei."""
@@ -262,24 +279,29 @@ class HuaweiHG8145V5Extractor:
         return xml_text
 
     def decrypt_value(self, enc_val):
-        """Descifra hashes reversibles propietarios $2 de Huawei."""
-        if not enc_val or not enc_val.startswith("$2"):
+        """Descifra hashes reversibles propietarios $1 y $2 de Huawei en Python puro."""
+        if not enc_val or not (enc_val.startswith("$2") or enc_val.startswith("$1")):
             return enc_val
-        if not self.hw_passwd_bin.exists():
-            return enc_val + " (Requiere compilar hw_passwd)"
-
         try:
-            proc = subprocess.Popen(
-                [str(self.hw_passwd_bin), "-s", "-d", "-"],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            out, _ = proc.communicate(input=enc_val.encode("utf-8"), timeout=5)
-            res = out.decode("utf-8", errors="ignore").strip()
-            if ":" in res:
-                return res.rsplit(":", 1)[1].strip()
-            return res
+            res = decrypt_huawei_password_native(enc_val)
+            if res != enc_val:
+                return res
         except Exception:
-            return enc_val
+            pass
+        if self.hw_passwd_bin.exists():
+            try:
+                proc = subprocess.Popen(
+                    [str(self.hw_passwd_bin), "-s", "-d", "-"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                out, _ = proc.communicate(input=enc_val.encode("utf-8"), timeout=5)
+                res = out.decode("utf-8", errors="ignore").strip()
+                if ":" in res:
+                    return res.rsplit(":", 1)[1].strip()
+                return res
+            except Exception:
+                return enc_val
+        return enc_val
 
     def parse_credentials(self, xml_text):
         """Extrae y estructura los parámetros de red y credenciales del XML."""
@@ -392,6 +414,17 @@ class HuaweiHG8145V5Extractor:
                 f.write(f"- **Clave Wi-Fi:** `{k}`\n")
 
         print(f"✅ Reportes generados:\n  - {json_path}\n  - {md_path}")
+        try:
+            import nokia_g1425gh_extractor
+            pjsip_path = nokia_g1425gh_extractor.render_asterisk_pjsip_conf(
+                results["sip_voip"], output_dir=str(self.output_dir)
+            )
+            sip_path, ext_path = nokia_g1425gh_extractor.render_asterisk_sip_conf(
+                results["sip_voip"], output_dir=str(self.output_dir)
+            )
+            print(f"  - {pjsip_path}\n  - {sip_path}\n  - {ext_path}")
+        except Exception:
+            pass
         return results
 
 

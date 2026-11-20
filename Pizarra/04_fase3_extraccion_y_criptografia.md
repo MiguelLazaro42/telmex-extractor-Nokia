@@ -356,3 +356,122 @@ Fuente: `/tmp/nokia_recon/cgi/` (capturados en MF-2.3, sesión `adminRole=0`). P
 - **MF-3.4** precisó el **modo de cifrado**: flujo con **keystream estático derivado del dispositivo**, sin IV/salt por-backup; el residuo de 6 B es `comp_size mod 16`, no texto en claro. Confirma que el muro de MF-3.3 es real y define cómo descifrar en cuanto se tenga la clave.
 - **MF-3.5** extrajo el **username PPPoE en claro** y, sobre todo, descubrió **`command.cgi?cat+<archivo>`** como el **lead de desbloqueo más prometedor sin firmware**.
 - ➡️ **MF-3.6 (pendiente, requiere OK explícito — prueba activa):** probar `GET log.cgi?vlog_glb` (read-only) y, con autorización, `POST command.cgi?cat+<ruta>` contra rutas candidatas (`/tmp/config.cfg`, `/tmp/*.xml`, archivos de clave) para intentar leer la config **ya descifrada** o el material de clave, evitando por completo la extracción de firmware.
+
+---
+
+# 🧪 MF-6.1 — `test_diag_ping_and_cat` ✅ EJECUTADA [2026-11-20] (prueba activa autorizada, read-only / diagnóstico)
+
+> **Objetivo:** ejecutar en modo controlado (login → prueba → logout garantizado en `finally`) el par `diag.cgi?ping` + `command.cgi?cat+<archivo>`, documentar el comportamiento EXACTO del bug de cifrado señalado en MF-3.5 (el segundo POST de `cat()` viaja **sin** el envoltorio RSA+AES) y **cerrar formalmente** el lead #1 de MF-3.5 (`command.cgi?cat+` como posible lectura arbitraria de archivos).
+> **Target:** `http://192.168.99.254/` · Nokia G-1425G-H · sesión `TELMEX`/`sf3h5zkdtA` (`adminRole=0`).
+> **Script:** `tests/mf6_1_diag_ping_cat.py` (reutiliza `make_opener`/`authenticate_nokia`/`logout_nokia`/`encrypt_post_data` de `nokia_auth.py`). Ejecutado con `.venv/bin/python -I tests/mf6_1_diag_ping_cat.py`.
+> **Cambios de estado en el router:** **ninguno.** `diag.cgi?ping` es la operación de diagnóstico nativa de la UI (1 ping ICMP a `127.0.0.1`, loopback del propio equipo); `command.cgi?cat+<f>` sólo se probó en modo lectura contra nombres de archivo que **no existen** en el equipo o que están **restringidos por validación de parámetro antes de tocar el sistema de archivos** (ver abajo). Sesión cerrada con `logout_nokia()` en `finally` en las 3 corridas (status `200` siempre).
+
+## 1️⃣ Mecanismo de cifrado por petición — confirmado bit a bit
+
+Ambos endpoints comparten el mismo hook `$(document).ajaxSend(...)` (ver `04_fase3_extraccion_y_criptografia.md` §MF-3.5-a y `/tmp/nokia_recon/cgi/diag.cgi_ping` líneas 85–112):
+
+```js
+$(document).ajaxSend(function(event, request, settings) {
+    if (settings.type == "POST") {
+        if (settings.data === undefined || settings.data === "") {
+            settings.data = 'csrf_token=MHlyCWWZDOaogecD';                 // ← SIN CIFRAR
+            request.setRequestHeader("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+        } else {
+            if ((settings.contentType||"").indexOf("application/x-www-form-urlencoded") < 0) { ...abort... }
+            if (settings.data.indexOf("csrf_token") < 0) settings.data += '&csrf_token=MHlyCWWZDOaogecD';
+            settings.data = crypto_page.encrypt_post_data(pubkey, settings.data);   // ← CIFRADO RSA+AES
+        }
+    }
+});
+```
+
+El **único** criterio para decidir si una petición POST se cifra o no es si **`settings.data` llega vacío/indefinido al hook**, no el endpoint ni la sensibilidad del dato:
+
+| Llamada en el JS real | Forma de la llamada jQuery | `settings.data` al entrar al hook | Rama tomada | Resultado en la red |
+| :--- | :--- | :--- | :--- | :--- |
+| `do_ping()` → `$.post(self.location.href, $('form').serialize())` | 2 args: `(url, data)`, `data` = string de formulario (`ipversion=ipv4&iface=...&checkall=ping&pingcount=1&packetlength=64`, **nunca vacío**) | string no vacía | **ELSE** → se antepone `csrf_token` si falta y se **cifra completo** con `crypto_page.encrypt_post_data(pubkey, data)` | `encrypted=1&ct=<AES-128-CBC base64url>&ck=<RSA-1024 PKCS#1 base64>` |
+| `cat(f)` → `$.post('command.cgi?cat+'+f, function(data,status){...})` | 2 args: `(url, successCallback)` — **jQuery interpreta el 2.º argumento como callback, no como `data`**, por lo que `settings.data` queda `undefined` | `undefined` | **IF** → `settings.data = 'csrf_token=<tok>'` **tal cual, SIN pasar por `encrypt_post_data`** | `csrf_token=<tok>` **en texto plano**, con `Content-Type: application/x-www-form-urlencoded` forzado por el propio hook |
+
+**Confirmado con tráfico real** (capturado por el script, ver §3 y §4): el POST a `diag.cgi?ping` efectivamente viaja como `encrypted=1&ct=...&ck=...`; el POST a `command.cgi?cat+<f>` viaja literalmente como el cuerpo **`csrf_token=<tok>`**, sin `ct`/`ck`, sin `encrypted=1`. Esto **no es una decisión de seguridad deliberada** (p. ej. "cat no necesita cifrado porque no es sensible"): es un **efecto colateral de la forma en que se invoca `$.post()`** — cualquier CGI de este firmware cuyo JS llame `$.post(url, callback)` (2 args, sin payload explícito) caerá en la misma rama sin cifrar. El csrf_token sigue viajando (mitiga CSRF básico) pero **la confidencialidad del payload del segundo POST depende enteramente de que no haya datos que cifrar**, no de un diseño explícito.
+
+## 2️⃣ `GET /diag.cgi?ping` (autenticado) — reto por página
+
+A diferencia de `GET /` (login), `diag.cgi?ping` **no** declara `var token = "..."`; el `csrf_token` vigente de la sesión aparece embebido **literalmente dentro del cuerpo del hook `ajaxSend`** (`settings.data = 'csrf_token=<tok>'`, línea ~91) y duplicado como hidden inyectado al formulario (`$("form").prepend('<input ... name="csrf_token" value="<tok>" />')`, línea ~1211). `var pubkey` (el mismo RSA-1024 global del login) sigue presente para que `encrypt_post_data` funcione dentro de esta página. Igual que en `usb.cgi?backup` (MF-3.1), **el token rota por carga** → debe leerse fresco justo antes del POST.
+
+**Resultado real:** `GET http://192.168.99.254/diag.cgi?ping` (sesión `TELMEX`) → **HTTP `200`**, HTML de **34 721 B**, `csrf_token` extraído = `qBBMNFnIcBDdkwzX` (ejemplo de una corrida; rota en cada repetición).
+
+## 3️⃣ `POST /diag.cgi?ping` — ping real de 1 paquete a `127.0.0.1`
+
+**Petición en claro reconstruida** (idéntica a `$('form').serialize()` + el `csrf_token` ya presente en el campo oculto, exactamente los parámetros especificados):
+```
+csrf_val=&csrf_token=qBBMNFnIcBDdkwzX&ipversion=ipv4&iface=pp,1,1,1&ip_address_name=0&ipaddr=127.0.0.1&checkall=ping&pingcount=1&packetlength=64
+```
+(`iface=pp,1,1,1` reproduce el valor que `bindWanInf()` genera para la única conexión PPPoE del equipo: prefijo `"pp,"` + `wandev_id=1` + `conn_id=1` + `_oid=1`, ver `/tmp/nokia_recon/cgi/diag.cgi_ping` líneas 930–932.)
+
+**Envuelta** con `encrypt_post_data(pubkey, plaintext)` (idéntico a `crypto_page.encrypt_post_data`, ya validado bit a bit en MF-2.1) → cuerpo real enviado:
+```
+encrypted=1&ct=euLe_GgE4uWsxE4CjYt3gJh06zlrbyLjwIRWV8DEwJFIGnWnSqAK_FjKLH_uogPT0nnJ7iPTrbSYY6ZB3vlk7yrbaDfcce-csirzn6l_I...
+```
+
+**Respuesta real del router:** **HTTP `200`**, cuerpo de **7 bytes**, **texto plano SIN cifrar**: `497.cmd`. ⇒ **`f = "497.cmd"`** (el router crea un archivo temporal de resultado nombrado `<id numérico>.cmd` y devuelve ese nombre tal cual; la respuesta de este CGI, a diferencia de las respuestas AES-CBC del flujo de login, **no** se cifra con `enckey`/`enciv` — viaja en claro).
+
+## 4️⃣ `POST /command.cgi?cat+497.cmd` — lectura del resultado del ping
+
+**Petición real enviada** (réplica exacta de `cat(f)`): `POST http://192.168.99.254/command.cgi?cat+497.cmd`, cuerpo **`csrf_token=qBBMNFnIcBDdkwzX`** (texto plano, confirmado §1), `Content-Type: application/x-www-form-urlencoded; charset=UTF-8`.
+
+El protocolo de paginación real de `cat()` se reprodujo con éxito: mientras la respuesta **empiece con `>`**, hay más datos pendientes y hay que volver a pedir **el mismo archivo** (`setTimeout("cat('"+f+"')",100)`); la respuesta final no lleva el prefijo `>`. **6 peticiones** (`polls`) bastaron para drenar el resultado completo del ping:
+
+```
+Please wait! Ping is in progress...
+PING 127.0.0.1 (127.0.0.1): 64 data bytes
+
+--- 127.0.0.1 ping statistics ---
+1 packets transmitted, 0 packets received, 100% packet loss
+```
+
+(El `100% packet loss` contra `127.0.0.1` es un artefacto del `ping` interno del equipo —netns/iptables del propio BusyBox— sin relevancia criptográfica; confirma simplemente que el comando se ejecutó.) Cada petición devolvió **HTTP `200`**; ninguna devolvió error.
+
+**Conclusión §3+§4:** el flujo completo `ping encriptado → filename en claro → cat sin cifrar → resultado en claro` funciona exactamente como describe MF-3.5, y el **segundo POST viaja sin el envoltorio RSA+AES** por el motivo exacto documentado en §1 (no por diseño, sino por la forma `$.post(url, callback)`).
+
+## 5️⃣ Alcance de `command.cgi?cat+<archivo>` — **lead #1 de MF-3.5 CERRADO: NO es lectura arbitraria de archivos**
+
+Se sondearon, en la misma sesión y de forma puramente de lectura, **9 rutas candidato** que un `cat` sin sanitizar permitiría leer (incluida una ruta con *path traversal* clásico):
+
+| Ruta probada | Resultado |
+| :--- | :--- |
+| `/tmp/ping_result`, `/tmp/config.cfg`, `/tmp/backup.cfg`, `/tmp/dmdb_encryption.cfg` | `HTTP 200` + `<script>alert(window.langjson["Invalid cat parameter."]);</script>` |
+| `/configs/config.cfg`, `/configs/`, `/etc/config/` | idéntico: `"Invalid cat parameter."` |
+| `/etc/passwd` | idéntico: `"Invalid cat parameter."` |
+| `../../../../etc/passwd` (path traversal clásico) | idéntico: `"Invalid cat parameter."` |
+
+**Caracterización de la validación** (barrido adicional de variantes del propio nombre ya válido `497.cmd`, todo en modo lectura, sin generar tráfico destructivo):
+
+| Candidato | Resultado |
+| :--- | :--- |
+| `1.cmd`, `99999.cmd` | **Pasan la validación** (`HTTP 200`, cuerpo vacío — el archivo numérico `.cmd` no existe en disco, pero el parámetro es aceptado) |
+| `497.CMD` (mayúsculas) | `"Invalid cat parameter."` |
+| `497.txt`, `497` (sin extensión `.cmd`) | `"Invalid cat parameter."` |
+| `abc.cmd` (no numérico) | `"Invalid cat parameter."` |
+| `/tmp/497.cmd` (ruta completa) | `"Invalid cat parameter."` |
+| `497.cmd.bak` | `"Invalid cat parameter."` |
+
+**Veredicto:** `command.cgi?cat+<f>` aplica una **validación de parámetro estricta ANTES de tocar el sistema de archivos**, equivalente a un patrón `^[0-9]+\.cmd$` (dígitos puros + extensión literal `.cmd` en minúsculas, sin rutas, sin mayúsculas, sin otra extensión). El manejador resuelve internamente el nombre validado dentro de un **directorio fijo propio del subsistema de diagnóstico** (no bajo control del cliente) — de ahí que `1.cmd`/`99999.cmd` (formato válido pero archivo inexistente) devuelvan `200` vacío en vez de error, mientras que **cualquier desviación de formato** (mayúsculas, extensión distinta, ruta absoluta/relativa, caracteres no numéricos) es rechazada con el mismo mensaje de error de UI, **sin diferenciar "no existe" de "ruta inválida"** y **sin llegar jamás a ejecutar un `cat` real sobre el argumento crudo**.
+
+➡️ **Impacto en el plan:** el **lead #1 de MF-3.5** ("`command.cgi?cat+<archivo>` como posible lectura arbitraria de archivos, máxima prioridad para leer el `config.cfg` ya descifrado desde `/tmp` durante un backup, o material de clave") queda **descartado y cerrado**. Este endpoint es un **lector de resultados de diagnóstico con alcance restringido a sus propios archivos `.cmd` numéricos**, no una primitiva de lectura arbitraria de archivos. **No aporta una vía nueva para recuperar la clave de `config.cfg` ni el XML en claro.** El muro documentado en MF-3.3 (clave simétrica derivada en el firmware) **permanece intacto**; las rutas pendientes siguen siendo las de MF-3.3 §"Rutas Pendientes" (extracción de firmware, UART/shell físico, o credencial de superusuario).
+
+## 6️⃣ Higiene de sesión
+
+3 corridas del script (`tests/mf6_1_diag_ping_cat.py`), cada una con ciclo limpio `login (299 + X-SID) → GET diag.cgi?ping → POST diag.cgi?ping → POST command.cgi?cat+ (×6 polls) → POST command.cgi?cat+ (9 + 8 sondas adicionales) → logout`. **Logout `GET /login.cgi?out` → `200` en las 3 corridas**, sin sesiones colgadas. Ningún cambio de configuración persistente en el router (el único efecto lateral es un ping ICMP transitorio del propio equipo a su loopback, ya limpiado por el firmware tras el `cat` final).
+
+## 💻 Código de MF-6.1
+
+`tests/mf6_1_diag_ping_cat.py` — funciones `diag_ping_challenge()` (GET + extracción de `pubkey`/`csrf_token` propios de `diag.cgi?ping`), `do_ping_1_packet()` (POST cifrado con `encrypt_post_data` de `nokia_auth.py`), `do_cat()` / `cat_full()` (POST sin cifrar + protocolo de paginación `>`), y el driver `main()` (login → challenge → ping → cat del resultado → 9 sondas de alcance → logout en `finally`). Reporte completo (incluyendo cada petición/respuesta cruda) guardado en `/tmp/nokia_recon/mf6_1/mf6_1_report.json`.
+
+## ✅ Cierre de MF-6.1
+
+- **Mecanismo de cifrado por petición:** confirmado bit a bit — depende únicamente de si `settings.data` llega vacío/indefinido al hook `ajaxSend`, no de una política de seguridad explícita por endpoint.
+- **`diag.cgi?ping`:** POST cifrado RSA+AES → devuelve el nombre de archivo de resultado **en texto plano** (`497.cmd` en la corrida real), sin cifrado de respuesta.
+- **`command.cgi?cat+<f>`:** POST con sólo `csrf_token=<tok>` **sin cifrar** (confirmado); **NO** es lectura arbitraria de archivos — validación estricta `^[0-9]+\.cmd$` previa al filesystem, alcance limitado a los propios resultados de diagnóstico del equipo.
+- **Lead #1 de MF-3.5 cerrado** (sin éxito): no existe una vía de lectura de `/tmp/config.cfg`, `/etc/passwd` ni ningún otro archivo del sistema a través de este endpoint.
+- **Sin cambios de estado** persistentes en el router; sesión cerrada (`logout 200`) en todas las corridas.
+- ➡️ **Siguiente paso:** las únicas rutas de desbloqueo de Fase 3 que quedan abiertas son las de MF-3.3 §"Rutas Pendientes" (extracción de firmware / UART-shell físico / credencial de superusuario). `log.cgi?vlog_glb` (MF-3.6, aún no ejecutada) sigue siendo la única sonda read-only pendiente de bajo riesgo para buscar pistas de rutas/binarios internos en el syslog en vivo.
