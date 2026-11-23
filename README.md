@@ -118,30 +118,48 @@ chmod +x setup_and_run.sh
 
 - **Python:** 3.8 o superior.
 - **Dependencias:**
-  ```bash
-  python3 -m venv .venv
-  .venv/bin/pip install -r requirements.txt
-  ```
+  - **En Windows (`CMD` / `PowerShell`):**
+    ```powershell
+    python -m venv .venv
+    .venv\Scripts\pip install -r requirements.txt
+    ```
+  - **En macOS / Linux:**
+    ```bash
+    python3 -m venv .venv
+    .venv/bin/pip install -r requirements.txt
+    ```
 
 ---
 
-## 🚀 Guía de Uso (Nokia `G-1425G-H`)
+## 🚀 Guía de Uso por Línea de Comandos — Nokia (`G-1425G-H`)
+
+> 💡 **Tip:** En **Windows** también puedes pasarle cualquier comando directamente a `setup_and_run.bat` (ej. `setup_and_run.bat nokia_g1425gh_extractor.py ...`) o usar `.venv\Scripts\python`.
 
 ### 1. Extracción Completa de Telemetría, Reportes y Plantillas Asterisk
 
 Conéctate a la red local del módem Nokia (ej. `192.168.99.254` o `192.168.1.254`) y ejecuta:
 
-```bash
-.venv/bin/python nokia_g1425gh_extractor.py --ip 192.168.99.254 -u TELMEX -p TuPasswordWeb
-```
+- **Windows (`CMD` / `PowerShell`):**
+  ```powershell
+  .venv\Scripts\python nokia_g1425gh_extractor.py --ip 192.168.99.254 -u TELMEX -p TuPasswordWeb
+  ```
+- **macOS / Linux:**
+  ```bash
+  .venv/bin/python nokia_g1425gh_extractor.py --ip 192.168.99.254 -u TELMEX -p TuPasswordWeb
+  ```
 
 - Si ya recolectaste previamente `output/web_telemetry.json` y deseas regenerar los reportes y configuraciones de Asterisk sin conectarte al módem (modo `--offline`), o inyectar un archivo XML (`--xml`) / parámetros SIP conocidos (`--sip-number`, `--sip-user`, `--sip-pass`):
-  ```bash
-  .venv/bin/python nokia_g1425gh_extractor.py --offline \
-    --sip-number +5255XXXXXXXX \
-    --sip-user +5255XXXXXXXX \
-    --sip-pass TuPasswordSIP
-  ```
+  - **Windows:**
+    ```powershell
+    .venv\Scripts\python nokia_g1425gh_extractor.py --offline --sip-number +5255XXXXXXXX --sip-user +5255XXXXXXXX --sip-pass TuPasswordSIP
+    ```
+  - **macOS / Linux:**
+    ```bash
+    .venv/bin/python nokia_g1425gh_extractor.py --offline \
+      --sip-number +5255XXXXXXXX \
+      --sip-user +5255XXXXXXXX \
+      --sip-pass TuPasswordSIP
+    ```
 
 **Archivos generados en `output/`:**
 - `output/web_telemetry.json`: Telemetría completa (identidad GPON, WAN VLAN 881, estado SIP, 10 redes Wi-Fi con sus claves WPA en texto claro y resumen de las 7,432 líneas del syslog).
@@ -155,63 +173,110 @@ Conéctate a la red local del módem Nokia (ej. `192.168.99.254` o `192.168.1.25
 ### 2. Verificación del Estado SIP en la ONT y Checklist de Red para Asterisk (`nokia_sip_manager.py`)
 
 1. **Consultar si el cliente SIP interno del Nokia está activo o inactivo (`MF-5.1a`):**
-   ```bash
-   .venv/bin/python nokia_sip_manager.py --status --ip 192.168.99.254 -p TuPasswordWeb
-   ```
+   - **Windows:**
+     ```powershell
+     .venv\Scripts\python nokia_sip_manager.py --status --ip 192.168.99.254 -p TuPasswordWeb
+     ```
+   - **macOS / Linux:**
+     ```bash
+     .venv/bin/python nokia_sip_manager.py --status --ip 192.168.99.254 -p TuPasswordWeb
+     ```
+
 2. **Ejecutar el diagnóstico de red, DNS IMS y SIP ALG para Asterisk (`MF-5.3a`):**
-   ```bash
-   .venv/bin/python nokia_sip_manager.py --check-network --ip 192.168.99.254 -p TuPasswordWeb
-   ```
+   - **Windows:**
+     ```powershell
+     .venv\Scripts\python nokia_sip_manager.py --check-network --ip 192.168.99.254 -p TuPasswordWeb
+     ```
+   - **macOS / Linux:**
+     ```bash
+     .venv/bin/python nokia_sip_manager.py --check-network --ip 192.168.99.254 -p TuPasswordWeb
+     ```
    Genera `output/asterisk_network_checklist.md` verificando:
    - Que el cliente SIP interno del Nokia esté `Disabled`.
    - Que la WAN `VLAN 881` esté conectada, incluya el servicio `VOIP` y exponga los DNS de Telmex (`189.233.12.5`, `189.233.15.2`).
    - Si el **SIP ALG** (`nat_glb.cgi?v=alg` → `SIPEnable`) está activo en el router (recomendando desactivarlo en *Security → DMZ and ALG* para evitar que el NAT altere los paquetes SIP/SDP de Asterisk).
 
 3. **Modificar el estado SIP en un XML de configuración y empaquetar `.cfg` (`MF-5.2b` + `MF-5.2a`):**
-   ```bash
-   # Modo 100% offline (genera el contenedor .cfg verificado sin subirlo al router)
-   .venv/bin/python nokia_sip_manager.py --disable --xml ruta/config.xml -o output/config_sip_disabled.cfg
+   - **Windows:**
+     ```powershell
+     :: Modo 100% offline (genera el contenedor .cfg verificado sin subirlo al router)
+     .venv\Scripts\python nokia_sip_manager.py --disable --xml ruta\config.xml -o output\config_sip_disabled.cfg
 
-   # Subida controlada al router (verifica magic y CRC32 antes de enviar a /usb.cgi?import)
-   .venv/bin/python nokia_sip_manager.py --disable --xml ruta/config.xml -o output/config_sip_disabled.cfg --apply --ip 192.168.99.254 -p TuPasswordWeb
-   ```
+     :: Subida controlada al router (verifica magic y CRC32 antes de enviar a /usb.cgi?import)
+     .venv\Scripts\python nokia_sip_manager.py --disable --xml ruta\config.xml -o output\config_sip_disabled.cfg --apply --ip 192.168.99.254 -p TuPasswordWeb
+     ```
+   - **macOS / Linux:**
+     ```bash
+     # Modo 100% offline (genera el contenedor .cfg verificado sin subirlo al router)
+     .venv/bin/python nokia_sip_manager.py --disable --xml ruta/config.xml -o output/config_sip_disabled.cfg
+
+     # Subida controlada al router (verifica magic y CRC32 antes de enviar a /usb.cgi?import)
+     .venv/bin/python nokia_sip_manager.py --disable --xml ruta/config.xml -o output/config_sip_disabled.cfg --apply --ip 192.168.99.254 -p TuPasswordWeb
+     ```
 
 ---
 
 ### 3. Descarga y Verificación Forense de Respaldos `config.cfg` (`nokia_backup.py` y `nokia_config_packer.py`)
 
-```bash
-# Descargar config.cfg en crudo desde el módem Nokia (MF-3.1)
-.venv/bin/python nokia_backup.py download --ip 192.168.99.254 -p TuPasswordWeb
+- **Windows:**
+  ```powershell
+  :: Descargar config.cfg en crudo desde el módem Nokia (MF-3.1)
+  .venv\Scripts\python nokia_backup.py download --ip 192.168.99.254 -p TuPasswordWeb
 
-# Analizar cabecera de 20 bytes (magic 0x00123123), entropía y verificar CRC32 (MF-3.2)
-.venv/bin/python nokia_backup.py analyze --file output/nokia_backup_raw.cfg
+  :: Analizar cabecera de 20 bytes (magic 0x00123123), entropía y verificar CRC32 (MF-3.2)
+  .venv\Scripts\python nokia_backup.py analyze --file output\nokia_backup_raw.cfg
 
-# Verificar integridad de cualquier contenedor .cfg con nokia_config_packer.py
-.venv/bin/python nokia_config_packer.py --verify output/nokia_backup_raw.cfg
-```
+  :: Verificar integridad de cualquier contenedor .cfg con nokia_config_packer.py
+  .venv\Scripts\python nokia_config_packer.py --verify output\nokia_backup_raw.cfg
+  ```
+- **macOS / Linux:**
+  ```bash
+  # Descargar config.cfg en crudo desde el módem Nokia (MF-3.1)
+  .venv/bin/python nokia_backup.py download --ip 192.168.99.254 -p TuPasswordWeb
+
+  # Analizar cabecera de 20 bytes (magic 0x00123123), entropía y verificar CRC32 (MF-3.2)
+  .venv/bin/python nokia_backup.py analyze --file output/nokia_backup_raw.cfg
+
+  # Verificar integridad de cualquier contenedor .cfg con nokia_config_packer.py
+  .venv/bin/python nokia_config_packer.py --verify output/nokia_backup_raw.cfg
+  ```
 
 ---
 
-## 🚀 Guía de Uso Manual por CLI — Huawei (`HG8145V5` / `HG8145V5V3` / `HG8245`)
+## 🚀 Guía de Uso por Línea de Comandos — Huawei (`HG8145V5` / `HG8145V5V3` / `HG8245`)
 
-Si prefieres ejecutar los scripts de **Huawei** directamente por línea de comandos en vez de usar el menú interactivo:
+Si prefieres ejecutar los scripts de **Huawei** directamente por línea de comandos en vez de usar el menú interactivo de `setup_and_run.bat` / `setup_and_run.sh`:
 
 1. **Extraer credenciales PPPoE, Wi-Fi, VoIP SIP (en texto claro) y plantillas de Asterisk:**
-   ```bash
-   .venv/bin/python huawei_hg8145v5_extractor.py --ip 192.168.1.254 -u TELMEX -p TuPasswordWeb
-   ```
-   *(El descifrado del contenedor Type-1 AES-256-CBC y de los hashes `$2...$` se realiza automáticamente en Python puro sin necesidad de compilar C++).*
+   - **Windows (`CMD` / `PowerShell`):**
+     ```powershell
+     .venv\Scripts\python huawei_hg8145v5_extractor.py --ip 192.168.1.254 -u TELMEX -p TuPasswordWeb
+     ```
+   - **macOS / Linux:**
+     ```bash
+     .venv/bin/python huawei_hg8145v5_extractor.py --ip 192.168.1.254 -u TELMEX -p TuPasswordWeb
+     ```
+   *(El descifrado del contenedor Type-1 AES-256-CBC y de los hashes `$2...$` se realiza automáticamente en Python puro sin necesidad de compilar C++ ni instalar OpenSSL en Windows).*
 
 2. **Desactivar el cliente SIP interno del módem Huawei para liberar la línea hacia Asterisk:**
-   ```bash
-   .venv/bin/python huawei_sip_manager.py --disable --apply --ip 192.168.1.254 -p TuPasswordWeb
-   ```
+   - **Windows:**
+     ```powershell
+     .venv\Scripts\python huawei_sip_manager.py --disable --apply --ip 192.168.1.254 -p TuPasswordWeb
+     ```
+   - **macOS / Linux:**
+     ```bash
+     .venv/bin/python huawei_sip_manager.py --disable --apply --ip 192.168.1.254 -p TuPasswordWeb
+     ```
 
 3. **Reactivar la telefonía SIP en el módem Huawei si deseas revertir los cambios:**
-   ```bash
-   .venv/bin/python huawei_sip_manager.py --enable --apply --ip 192.168.1.254 -p TuPasswordWeb
-   ```
+   - **Windows:**
+     ```powershell
+     .venv\Scripts\python huawei_sip_manager.py --enable --apply --ip 192.168.1.254 -p TuPasswordWeb
+     ```
+   - **macOS / Linux:**
+     ```bash
+     .venv/bin/python huawei_sip_manager.py --enable --apply --ip 192.168.1.254 -p TuPasswordWeb
+     ```
 
 ---
 
@@ -219,16 +284,18 @@ Si prefieres ejecutar los scripts de **Huawei** directamente por línea de coman
 
 El proyecto incluye pruebas unitarias y de validación criptográfica en la carpeta `tests/` (todas se ejecutan 100% en memoria sin alterar el router):
 
-```bash
-# 1. Validación bit a bit de primitivas criptográficas (AES-128-CBC sjcl, RSA-1024 PKCS#1 v1.5, base64url)
-.venv/bin/python -I tests/validate_crypto.py
-
-# 2. Pruebas unitarias de parsers XML TR-098/TR-104, reportes y plantillas Asterisk (11 pruebas)
-.venv/bin/python -I tests/test_xml_parsers.py
-
-# 3. Pruebas del empaquetador Nokia .cfg y gestor SIP (25 pruebas)
-.venv/bin/python -I -m unittest discover -s tests
-```
+- **En Windows (`CMD` / `PowerShell`):**
+  ```powershell
+  .venv\Scripts\python -I tests\validate_crypto.py
+  .venv\Scripts\python -I tests\test_xml_parsers.py
+  .venv\Scripts\python -I -m unittest discover -s tests
+  ```
+- **En macOS / Linux:**
+  ```bash
+  .venv/bin/python -I tests/validate_crypto.py
+  .venv/bin/python -I tests/test_xml_parsers.py
+  .venv/bin/python -I -m unittest discover -s tests
+  ```
 
 ---
 
