@@ -46,6 +46,8 @@ Conjunto modular de herramientas en Python (y C++ para variantes Huawei) diseña
 | [`nokia_g1425gh_extractor.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/nokia_g1425gh_extractor.py) | `MF-4.1a` .. `MF-4.3b` | Extractor principal: recolecta telemetría web en vivo, descifra todas las contraseñas Wi-Fi (`PreSharedKey`) en texto plano con la clave AES de sesión, descarga el syslog mediante doble envoltorio RSA+AES, parsea árboles XML TR-098/TR-104 y genera los reportes y plantillas para **Asterisk**. |
 | [`nokia_config_packer.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/nokia_config_packer.py) | `MF-5.1b`, `MF-5.2a` | Constructor de cabecera binaria de 20/40 bytes (`build_cfg_header_and_crc`), compresor `zlib` (`pack_nokia_configuration`) y verificador de integridad `CRC32` (`verify_nokia_pack`). |
 | [`nokia_sip_manager.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/nokia_sip_manager.py) | `MF-5.1a`, `MF-5.2b`, `MF-5.2c`, `MF-5.3a` | Diagnóstico en vivo del cliente SIP interno de la ONT (`--status`), diagnóstico de red y **SIP ALG** para Asterisk (`--check-network`), edición de estado `Enable` en nodos XML de voz (`--disable` / `--enable`) y restauración verificada (`--apply`). |
+| [`telmex_launcher.py`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/telmex_launcher.py) | Lanzador Unificado | Menú interactivo para elegir modelo (**Nokia** o **Huawei**), IP, usuario, contraseña, perfiles preconfigurados y generación de plantillas Asterisk. |
+| [`setup_and_run.bat`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/setup_and_run.bat) / [`setup_and_run.sh`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/setup_and_run.sh) | Auto-Instaladores 1-Click | Scripts de arranque automático para **Windows**, **macOS** y **Linux**: descargan el proyecto si se ejecutan sueltos, instalan Python 3.12 + `PATH`, crean `.venv`, instalan `requirements.txt` y lanzan el menú interactivo. |
 
 ---
 
@@ -64,7 +66,55 @@ Todo el proceso de ingeniería, hallazgos por fase, pruebas diferenciales y deci
 
 ---
 
-## 💻 Requisitos e Instalación
+## ⚡ Inicio Rápido 1-Click (Auto-Instalador con Menú Interactivo)
+
+No necesitas tener Python, Git ni compiladores C++ preinstalados. Tanto el descifrado `$2` de Huawei como el cifrado híbrido `RSA-1024 + AES-128-CBC` de Nokia funcionan **100% en Python puro**.
+
+### 🪟 En Windows (`setup_and_run.bat`)
+1. Haz **doble clic** sobre [`setup_and_run.bat`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/setup_and_run.bat) (incluso puedes copiar únicamente el archivo `setup_and_run.bat` a un PC nuevo sin nada instalado).
+   - O ejecútalo en una sola línea desde `CMD` / `PowerShell`:
+     ```powershell
+     curl -L -o setup_and_run.bat https://raw.githubusercontent.com/MiguelLazaro42/telmex-extractor-Nokia/main/setup_and_run.bat && .\setup_and_run.bat
+     ```
+2. El script automáticamente:
+   - Descarga y descomprime este repositorio desde GitHub si ejecutaste el `.bat` suelto.
+   - Detecta si falta Python 3.8+ y, de ser necesario, descarga e instala silenciosamente **Python 3.12 (64-bit)** agregándolo al `PATH`.
+   - Crea el entorno virtual `.venv`, instala `requirements.txt` (`cryptography`) y abre el **Menú Interactivo Unificado** (`telmex_launcher.py`).
+
+### 🍎 / 🐧 En macOS y Linux (`setup_and_run.sh`)
+```bash
+chmod +x setup_and_run.sh
+./setup_and_run.sh
+```
+
+### 🎛️ Vista del Menú Interactivo (`telmex_launcher.py`)
+```text
+========================================================================
+ 📡 TELMEX ONT EXTRACTOR & GESTOR SIP / ASTERISK — MENÚ INTERACTIVO
+========================================================================
+   • Marca / Modelo actual : [NOKIA] Nokia G-1425G-H
+   • Dirección IP objetivo : 192.168.99.254
+   • Usuario Web           : TELMEX
+   • Contraseña Web        : (sin definir — se solicitará al ejecutar)
+   • Carpeta de salida     : output/
+------------------------------------------------------------------------
+  CONFIGURACIÓN DE OBJETIVO:
+   [1] Cambiar Marca / Modelo (Huawei / Nokia) o Cargar Perfil Rápido
+   [2] Configurar IP, Usuario, Contraseña y Carpeta de Salida
+------------------------------------------------------------------------
+  ACCIONES SOBRE EL MÓDEM Y ASTERISK:
+   [3] Extraer Credenciales (PPPoE, Wi-Fi, VoIP SIP) y Generar Config Asterisk
+   [4] Desactivar Cliente SIP Interno en el Módem (--disable para liberar línea)
+   [5] Reactivar Cliente SIP Interno en el Módem (--enable)
+   [6] Diagnóstico de Red / SIP ALG / Descarga de Backup Crudo (Nokia)
+   [7] Generar Plantillas de Asterisk Ingresando Datos SIP Manualmente
+   [0] Salir
+========================================================================
+```
+
+---
+
+## 💻 Instalación Manual (Opcional)
 
 - **Python:** 3.8 o superior.
 - **Dependencias:**
@@ -140,6 +190,28 @@ Conéctate a la red local del módem Nokia (ej. `192.168.99.254` o `192.168.1.25
 # Verificar integridad de cualquier contenedor .cfg con nokia_config_packer.py
 .venv/bin/python nokia_config_packer.py --verify output/nokia_backup_raw.cfg
 ```
+
+---
+
+## 🚀 Guía de Uso Manual por CLI — Huawei (`HG8145V5` / `HG8145V5V3` / `HG8245`)
+
+Si prefieres ejecutar los scripts de **Huawei** directamente por línea de comandos en vez de usar el menú interactivo:
+
+1. **Extraer credenciales PPPoE, Wi-Fi, VoIP SIP (en texto claro) y plantillas de Asterisk:**
+   ```bash
+   .venv/bin/python huawei_hg8145v5_extractor.py --ip 192.168.1.254 -u TELMEX -p TuPasswordWeb
+   ```
+   *(El descifrado del contenedor Type-1 AES-256-CBC y de los hashes `$2...$` se realiza automáticamente en Python puro sin necesidad de compilar C++).*
+
+2. **Desactivar el cliente SIP interno del módem Huawei para liberar la línea hacia Asterisk:**
+   ```bash
+   .venv/bin/python huawei_sip_manager.py --disable --apply --ip 192.168.1.254 -p TuPasswordWeb
+   ```
+
+3. **Reactivar la telefonía SIP en el módem Huawei si deseas revertir los cambios:**
+   ```bash
+   .venv/bin/python huawei_sip_manager.py --enable --apply --ip 192.168.1.254 -p TuPasswordWeb
+   ```
 
 ---
 
