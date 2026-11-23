@@ -51,21 +51,6 @@ Conjunto modular de herramientas en Python (y C++ para variantes Huawei) diseña
 
 ---
 
-## 🗂️ Memoria del Proyecto y Bitácora Técnica (`Pizarra/`)
-
-Todo el proceso de ingeniería, hallazgos por fase, pruebas diferenciales y decisiones de arquitectura se encuentra documentado paso a paso en la carpeta [`Pizarra/`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/00_indice_y_arquitectura.md):
-
-1. [`00_indice_y_arquitectura.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/00_indice_y_arquitectura.md) — Índice general, estado de todas las fases y bitácora cronológica.
-2. [`01_plan_maestro_fases.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/01_plan_maestro_fases.md) — Estrategia general y resultados de las Fases 1 a 3.5.
-3. [`02_fase1_reconocimiento_nokia.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/02_fase1_reconocimiento_nokia.md) — Reconocimiento de red, `thttpd` y análisis del frontend criptográfico JS (`crypto_page.js`, `sjcl.js`).
-4. [`03_fase2_autenticacion_y_endpoints.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/03_fase2_autenticacion_y_endpoints.md) — Autenticación `HTTP 299` + `X-SID`, identificación del Nokia `G-1425G-H` y catálogo de los 43 CGIs.
-5. [`04_fase3_extraccion_y_criptografia.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/04_fase3_extraccion_y_criptografia.md) — Análisis de cabecera `0x00123123`, `CRC32` y pruebas diferenciales sobre `config.cfg`.
-6. [`05_plan_detallado_fases_4_y_5.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/05_plan_detallado_fases_4_y_5.md) — Especificación granular de las 12 microfunciones de las Fases 4 y 5 (`MF-4.1a` a `MF-5.3a`).
-7. [`06_fase4_extraccion_y_asterisk.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/06_fase4_extraccion_y_asterisk.md) — Documentación e integración de los recolectores de telemetría, descifrado Wi-Fi, syslog y plantillas Asterisk.
-8. [`07_fase5_empaquetador_y_sip_manager.md`](file:///Users/miguellazarosantiago/Documents/Tools/telmex-extractor-Nokia/Pizarra/07_fase5_empaquetador_y_sip_manager.md) — Documentación del empaquetador `.cfg`, gestor SIP y checklist de interoperabilidad Asterisk ↔ IMS Telmex.
-
----
-
 ## ⚡ Inicio Rápido 1-Click (Auto-Instalador con Menú Interactivo)
 
 No necesitas tener Python, Git ni compiladores C++ preinstalados. Tanto el descifrado `$2` de Huawei como el cifrado híbrido `RSA-1024 + AES-128-CBC` de Nokia funcionan **100% en Python puro**.

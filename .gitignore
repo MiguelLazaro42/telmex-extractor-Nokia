@@ -1,4 +1,6 @@
 output/
+output_*/
+Pizarra/
 *.xml
 *.bin
 *.cfg
@@ -6,8 +8,6 @@ output/
 *.md
 !README.md
 !src/README.md
-!Pizarra/
-!Pizarra/*.md
 __pycache__/
 *.pyc
 .DS_Store
