@@ -72,6 +72,55 @@ KNOWN_PRESETS = [
 ]
 
 
+def _probe_router_brand(ip: str, timeout: float = 3.0) -> tuple:
+    """
+    Sonda HTTP rápida (GET /) para detectar automáticamente si el módem en `ip`
+    es Huawei EchoLife o Nokia GPON Home Gateway sin importar qué IP tenga.
+    Devuelve (brand, model_label, detected_ok).
+    """
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            f"http://{ip}/",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; telmex-launcher)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            html = r.read(32768).decode("utf-8", errors="ignore")
+    except Exception:
+        html = ""
+
+    # 1. Huella Nokia (pubkey RSA + crypto_page.js / js_glb)
+    if "var pubkey" in html and "BEGIN PUBLIC KEY" in html:
+        return ("NOKIA", "Nokia G-1425G-H / G-2425G-A (Auto-detectado)", True)
+
+    # 2. Huella Huawei (GetRandCount.asp o marcadores HW en index/login)
+    if any(k in html for k in ("GetRandCount.asp", "X_HW_Token", "hw_ctree", "frame.asp", "Cuscss")):
+        return ("HUAWEI", "Huawei EchoLife HG8145V5 / HG8145V5V3 (Auto-detectado)", True)
+
+    try:
+        req_hw = urllib.request.Request(f"http://{ip}/asp/GetRandCount.asp", data=b"")
+        with urllib.request.urlopen(req_hw, timeout=timeout) as r2:
+            tok = r2.read(128).decode("utf-8", errors="ignore").strip().lstrip("\ufeff")
+            if tok and len(tok) >= 16 and all(c in "0123456789abcdefABCDEF" for c in tok):
+                return ("HUAWEI", "Huawei EchoLife HG8145V5 / HG8145V5V3 (Auto-detectado)", True)
+    except Exception:
+        pass
+
+    return ("HUAWEI", "Huawei EchoLife HG8145V5 / HG8145V5V3", False)
+
+
+def _auto_sync_brand(state: dict):
+    """Sincroniza automáticamente la marca del módem sondeando HTTP en state['ip']."""
+    brand, model, ok = _probe_router_brand(state["ip"])
+    if ok:
+        if state["brand"] != brand:
+            print(f"🔎 Módem detectado automáticamente en http://{state['ip']}/ -> [{brand}] {model}")
+        state["brand"] = brand
+        state["model"] = model
+    return ok
+
+
 def _mask_pwd(pwd: str) -> str:
     if not pwd:
         return "(sin definir — se solicitará al ejecutar)"
@@ -131,6 +180,7 @@ def _configure_credentials(state: dict):
     )
     if state["ip"].lower() == "auto":
         state["ip"] = detected_gw
+    _auto_sync_brand(state)
 
     state["user"] = _prompt(
         f"  👤 Usuario de acceso web [Enter para '{state['user']}']: ",
@@ -166,6 +216,7 @@ def _ensure_password(state: dict) -> str:
 
 
 def _run_extraction(state: dict):
+    _auto_sync_brand(state)
     pwd = _ensure_password(state)
     ip = state["ip"] or huawei_ext.detect_default_gateway()
     user = state["user"]
@@ -207,6 +258,7 @@ def _run_extraction(state: dict):
 
 
 def _run_sip_action(state: dict, enable: bool):
+    _auto_sync_brand(state)
     pwd = _ensure_password(state)
     ip = state["ip"] or huawei_ext.detect_default_gateway()
     user = state["user"]
@@ -266,25 +318,31 @@ def _run_sip_action(state: dict, enable: bool):
 
 
 def _run_diagnostics(state: dict):
-    pwd = _ensure_password(state)
+    _auto_sync_brand(state)
     ip = state["ip"] or huawei_ext.detect_default_gateway()
     user = state["user"]
     out_dir = state["out_dir"]
 
     if state["brand"] == "NOKIA":
+        pwd = _ensure_password(state)
         print("\n" + "=" * 72)
         print(f" 🩺 DIAGNÓSTICO DE RED, SIP ALG Y ESTADO VOIP EN NOKIA ({ip})")
         print("=" * 72)
-        nokia_sip_manager.main(["--check-network", "--ip", ip, "-u", user, "-p", pwd, "--out", out_dir])
-        print("\n📥 ¿Deseas descargar también el respaldo binario config.cfg del Nokia?")
-        dl = _prompt("   Descargar config.cfg a '%s' [s/N]: " % out_dir, "n")
-        if dl.lower() in ("s", "si", "sí", "y", "yes"):
-            res = nokia_backup.download_nokia_backup(
-                opener=None, ip=ip, output_dir=out_dir, user=user, password=pwd
-            )
-            print(json.dumps(res, indent=2, ensure_ascii=False))
+        try:
+            nokia_sip_manager.main(["--check-network", "--ip", ip, "-u", user, "-p", pwd, "--out", out_dir])
+            print("\n📥 ¿Deseas descargar también el respaldo binario config.cfg del Nokia?")
+            dl = _prompt("   Descargar config.cfg a '%s' [s/N]: " % out_dir, "n")
+            if dl.lower() in ("s", "si", "sí", "y", "yes"):
+                res = nokia_backup.download_nokia_backup(
+                    opener=None, ip=ip, output_dir=out_dir, user=user, password=pwd
+                )
+                print(json.dumps(res, indent=2, ensure_ascii=False))
+        except Exception as e:
+            print(f"\n❌ Error durante el diagnóstico Nokia en {ip}: {e}")
     else:
-        print("\nℹ️ Para módems Huawei, usa la opción [3] para descargar y descifrar hw_ctree.xml.")
+        print(f"\n🔎 El módem en {ip} es un HUAWEI ({state['model']}).")
+        print("   Ejecutando extracción y descifrado completo de Huawei (hw_ctree.xml + Asterisk)...")
+        _run_extraction(state)
 
 
 def _run_custom_asterisk_generator(state: dict):
@@ -319,13 +377,10 @@ def _run_custom_asterisk_generator(state: dict):
 
 def main():
     detected_gw = huawei_ext.detect_default_gateway()
+    brand, model, _ = _probe_router_brand(detected_gw)
     state = {
-        "brand": "HUAWEI" if detected_gw == "192.168.1.254" else "NOKIA",
-        "model": (
-            "Huawei EchoLife HG8145V5 / HG8145V5V3"
-            if detected_gw == "192.168.1.254"
-            else "Nokia G-1425G-H"
-        ),
+        "brand": brand,
+        "model": model,
         "ip": detected_gw,
         "user": "TELMEX",
         "password": "",
